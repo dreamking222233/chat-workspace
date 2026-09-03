@@ -1,0 +1,33 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies and generated frontend output
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Python caches and build metadata
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime databases, logs, uploads, and generated test artifacts
+*.db
+*.sqlite
+*.sqlite3
+*.log
+backend/data/
+data/
+.setting/
+.codex-backups/
+
+# OS/editor files
+.DS_Store
+.idea/
+.vscode/
