@@ -400,13 +400,25 @@ describe('ChatWorkspace remote stream', () => {
 
   it('shows the image creation card while a direct image request is pending', async () => {
     const thread = { id: 'thread-image', title: '新聊天', model: '', messages: [] }
+    const failedThread = {
+      ...thread,
+      title: '生成一张直播间截图 16:9 2K 高清',
+      messages: [
+        { id: 'server-user-image', role: 'user', content: '生成一张直播间截图 16:9 2K 高清', content_type: 'text' },
+        { id: 'server-assistant-image', role: 'assistant', content: '图片模型渠道尚未开通生图权限。', content_type: 'text', asset_ids: [] },
+      ],
+    }
+    let imageFailed = false
     let finishImageRequest: (response: Response) => void = () => {}
     const pendingImageRequest = new Promise<Response>((resolve) => { finishImageRequest = resolve })
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
-      if (init?.method === 'POST' && url.includes('/image-generations')) return pendingImageRequest
+      if (init?.method === 'POST' && url.includes('/image-generations')) {
+        imageFailed = true
+        return pendingImageRequest
+      }
       if (url.includes('/threads?include_archived=true')) return jsonResponse([])
-      if (url.endsWith('/threads')) return jsonResponse([thread])
+      if (url.endsWith('/threads')) return jsonResponse([imageFailed ? failedThread : thread])
       if (url.endsWith('/projects')) return jsonResponse([])
       if (url.endsWith('/models')) return jsonResponse([{ model: 'gpt-image-2', modality: 'image', channel_name: '图片渠道', channel_id: 'channel-image', capabilities: ['image'] }])
       return jsonResponse({})
@@ -425,8 +437,101 @@ describe('ChatWorkspace remote stream', () => {
     const request = fetchMock.mock.calls.find(([input, init]) => init?.method === 'POST' && String(input).includes('/image-generations'))
     expect(JSON.parse(String(request?.[1]?.body))).toMatchObject({ prompt: '生成一张直播间截图 16:9 2K 高清', model: 'gpt-image-2', channel_id: 'channel-image' })
 
-    await act(async () => { finishImageRequest({ ok: false, status: 502, text: async () => 'test complete' } as Response) })
+    await act(async () => { finishImageRequest({ ok: false, status: 502, text: async () => JSON.stringify({ message: '图片模型渠道尚未开通生图权限。' }) } as Response) })
     await waitFor(() => expect(screen.queryByRole('status', { name: '正在创建图片' })).toBeNull())
+    expect(await screen.findByText('图片模型渠道尚未开通生图权限。', { selector: '.assistant-markdown p' })).toBeTruthy()
+    expect(screen.getByText('生成一张直播间截图 16:9 2K 高清', { selector: '.user-bubble' })).toBeTruthy()
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/threads')).length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('renders a legacy failed image record as text instead of a broken image', async () => {
+    const thread = {
+      id: 'thread-failed-image-history',
+      title: '失败图片记录',
+      model: 'gpt-image-2',
+      messages: [
+        { id: 'user-failed-image', role: 'user', content: '生成一张图片', content_type: 'text' },
+        { id: 'assistant-failed-image', role: 'assistant', content: '图片生成失败，请检查图片模型渠道配置。', content_type: 'image', asset_ids: [] },
+      ],
+    }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/threads?include_archived=true')) return jsonResponse([])
+      if (url.endsWith('/threads')) return jsonResponse([thread])
+      if (url.endsWith('/projects')) return jsonResponse([])
+      if (url.endsWith('/models')) return jsonResponse([{ model: 'gpt-image-2', modality: 'image', channel_name: '图片渠道', channel_id: 'channel-image', capabilities: ['image'] }])
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ChatWorkspace />)
+
+    expect(await screen.findByText('图片生成失败，请检查图片模型渠道配置。')).toBeTruthy()
+    expect(screen.queryByAltText('生成的图片')).toBeNull()
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('图片生成失败'))).toBe(false)
+  })
+
+  it('rejects a non-image asset response instead of rendering it as an image', async () => {
+    const thread = {
+      id: 'thread-invalid-image-asset',
+      title: '异常资源',
+      model: 'gpt-image-2',
+      messages: [
+        { id: 'assistant-invalid-asset', role: 'assistant', content: '/api/v1/assets/not-an-image', content_type: 'image', asset_ids: ['not-an-image'] },
+      ],
+    }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/assets/not-an-image')) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => 'text/html; charset=utf-8' },
+          blob: async () => new Blob(['<html>not an image</html>'], { type: 'text/html' }),
+        } as unknown as Response
+      }
+      if (url.includes('/threads?include_archived=true')) return jsonResponse([])
+      if (url.endsWith('/threads')) return jsonResponse([thread])
+      if (url.endsWith('/projects')) return jsonResponse([])
+      if (url.endsWith('/models')) return jsonResponse([{ model: 'gpt-image-2', modality: 'image', channel_name: '图片渠道', channel_id: 'channel-image', capabilities: ['image'] }])
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ChatWorkspace />)
+
+    expect((await screen.findByRole('alert')).textContent).toContain('图片资源加载失败')
+    expect(screen.queryByAltText('生成的图片')).toBeNull()
+  })
+
+  it('shows the mapped image-tool failure from the stream', async () => {
+    const thread = { id: 'thread-tool-failure', title: '新聊天', model: 'text-model', messages: [] }
+    const frames = [
+      'id: 1\nevent: message.created\ndata: {"message_id":"assistant-tool","user_message_id":"user-tool","request_id":"request-tool"}\n\n',
+      'id: 2\nevent: tool.started\ndata: {"request_id":"request-tool","tool_call_id":"call-tool","tool_name":"generate_image","arguments":"{}"}\n\n',
+      'id: 3\nevent: tool.completed\ndata: ' + JSON.stringify({ request_id: 'request-tool', tool_call_id: 'call-tool', tool_name: 'generate_image', ok: false, error: '图片模型渠道暂无可用图片配额，请稍后重试。' }) + '\n\n',
+      'id: 4\nevent: message.delta\ndata: {"message_id":"assistant-tool","delta":"图片服务暂不可用。"}\n\n',
+      'id: 5\nevent: message.completed\ndata: {"message_id":"assistant-tool","content":"图片服务暂不可用。"}\n\n',
+    ].join('')
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (init?.method === 'POST' && url.includes('/messages/stream')) return immediateSseResponse(frames)
+      if (url.includes('/threads?include_archived=true')) return jsonResponse([])
+      if (url.endsWith('/threads')) return jsonResponse([thread])
+      if (url.endsWith('/projects')) return jsonResponse([])
+      if (url.endsWith('/models')) return jsonResponse([{ model: 'text-model', modality: 'text', channel_name: '渠道', channel_id: 'channel-text', capabilities: ['text'] }])
+      return jsonResponse({})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ChatWorkspace />)
+    await waitFor(() => expect(screen.getByLabelText('选择模型')).toBeTruthy())
+    fireEvent.change(screen.getByLabelText('消息'), { target: { value: '帮我生成一张图片' } })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '发送' })) })
+
+    expect(await screen.findByText('图片模型渠道暂无可用图片配额，请稍后重试。')).toBeTruthy()
+    expect(await screen.findByText('图片服务暂不可用。')).toBeTruthy()
+    expect(screen.queryByAltText('生成的图片')).toBeNull()
   })
 
   it('keeps the user prompt and clears the image placeholder when stopped', async () => {
@@ -468,7 +573,7 @@ describe('ChatWorkspace remote stream', () => {
     const delayedTextStream = delayedSseResponse(textFrames)
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
-      if (init?.method === 'POST' && url.includes('/image-generations')) return jsonResponse({ message_id: 'image-message', user_message_id: 'image-user', url: 'data:image/png;base64,aW1hZ2U=', model: 'gpt-image-2' })
+      if (init?.method === 'POST' && url.includes('/image-generations')) return jsonResponse({ message_id: 'image-message', user_message_id: 'image-user', asset_id: 'image-asset', url: 'data:image/png;base64,aW1hZ2U=', model: 'gpt-image-2' })
       if (init?.method === 'POST' && url.includes('/messages/stream')) return delayedTextStream.response
       if (url.includes('/threads?include_archived=true')) return jsonResponse([])
       if (url.endsWith('/threads')) return jsonResponse([thread])

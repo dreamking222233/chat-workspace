@@ -1028,6 +1028,149 @@ def test_prompt_level_image_tool_call_executes_and_hides_protocol(monkeypatch):
             path.unlink(missing_ok=True)
 
 
+@pytest.mark.parametrize(
+    ("upstream_status", "expected_message"),
+    [
+        (403, "图片模型渠道尚未开通生图权限。"),
+        (429, "图片模型渠道暂无可用图片配额，请稍后重试。"),
+    ],
+)
+def test_text_image_tool_failure_surfaces_mapped_error(monkeypatch, upstream_status, expected_message):
+    """Native/prompt tool failures must retain actionable provider semantics."""
+    turns = 0
+    marker = '<platform_tool_call>{"name":"generate_image","arguments":{"prompt":"生成直播间图片"}}</platform_tool_call>'
+
+    def tool_text(*_args, **_kwargs):
+        nonlocal turns
+        turns += 1
+        return TextResult(chunks=iter([marker] if turns == 1 else ["图片服务暂不可用。"]))
+
+    def rejected_image(*_args, **_kwargs):
+        request = httpx.Request("POST", "https://provider.example/v1/images/generations")
+        response = httpx.Response(upstream_status, request=request)
+        raise httpx.HTTPStatusError("generation rejected", request=request, response=response)
+
+    monkeypatch.setattr(workspace_api, "openai_text", tool_text)
+    monkeypatch.setattr(workspace_api, "image_request", rejected_image)
+
+    with TestClient(app) as client:
+        user, user_headers = _registered_client(client, "failed-tool-image")
+        admin_headers = _admin_headers(client)
+        assert client.post(
+            f"/api/v1/admin/users/{user['id']}/entitlements",
+            headers=admin_headers,
+            json={"months": 1},
+        ).status_code == 200
+        created_channel = client.post(
+            "/api/v1/admin/model-channels",
+            headers=admin_headers,
+            json={
+                "name": f"Failed Tool Image {uuid.uuid4().hex}",
+                "base_url": "https://provider.example/v1",
+                "api_key": "TOKEN",
+                "modality": "both",
+                "models": ["text-model", "image-model"],
+                "capabilities": {"text-model": ["text"], "image-model": ["image"]},
+                "priority": 1,
+            },
+        )
+        assert created_channel.status_code == 201
+        channel_id = created_channel.json()["id"]
+        try:
+            thread = client.post("/api/v1/threads", headers=user_headers, json={"title": "Failed tool image", "model": "text-model"}).json()
+            response = client.post(
+                f"/api/v1/threads/{thread['id']}/messages/stream",
+                headers={**user_headers, "Idempotency-Key": f"tool-failed-{uuid.uuid4().hex}"},
+                json={"content": "帮我生成一张直播间图片", "model": "text-model", "channel_id": channel_id, "enable_tools": True},
+            )
+
+            assert response.status_code == 200
+            assert "event: tool.completed" in response.text
+            assert expected_message in response.text
+            assert "HTTPStatusError" not in response.text
+            assert "event: image.created" not in response.text
+            messages = client.get(f"/api/v1/threads/{thread['id']}/messages", headers=user_headers).json()
+            assert [message["content_type"] for message in messages] == ["text", "text"]
+            assert messages[-1]["content"] == "图片服务暂不可用。"
+            with SessionLocal() as db:
+                image_request = db.scalar(
+                    select(ModelRequest)
+                    .where(ModelRequest.thread_id == thread["id"], ModelRequest.modality == "image")
+                    .order_by(ModelRequest.created_at.desc())
+                )
+                assert image_request is not None and image_request.status == "failed"
+                assert image_request.error_code == "HTTPStatusError"
+        finally:
+            assert client.delete(f"/api/v1/admin/model-channels/{channel_id}", headers=admin_headers).status_code == 204
+
+
+@pytest.mark.parametrize(
+    ("upstream_status", "expected_message"),
+    [
+        (403, "图片模型渠道尚未开通生图权限。"),
+        (429, "图片模型渠道暂无可用图片配额，请稍后重试。"),
+    ],
+)
+def test_direct_image_provider_failure_persists_text_message(monkeypatch, upstream_status, expected_message):
+    """A rejected image request must reload as text, never as a broken image."""
+
+    def rejected_image(*_args, **_kwargs):
+        request = httpx.Request("POST", "https://provider.example/v1/images/generations")
+        response = httpx.Response(upstream_status, request=request)
+        raise httpx.HTTPStatusError("generation is disabled", request=request, response=response)
+
+    monkeypatch.setattr(workspace_api, "image_request", rejected_image)
+
+    with TestClient(app) as client:
+        user, user_headers = _registered_client(client, "failed-image")
+        admin_headers = _admin_headers(client)
+        assert client.post(
+            f"/api/v1/admin/users/{user['id']}/entitlements",
+            headers=admin_headers,
+            json={"months": 1},
+        ).status_code == 200
+        created_channel = client.post(
+            "/api/v1/admin/model-channels",
+            headers=admin_headers,
+            json={
+                "name": f"Failed Image {uuid.uuid4().hex}",
+                "base_url": "https://provider.example/v1",
+                "api_key": "TOKEN",
+                "modality": "image",
+                "models": ["image-model"],
+                "capabilities": {"image-model": ["image"]},
+                "priority": 1,
+            },
+        )
+        assert created_channel.status_code == 201
+        channel_id = created_channel.json()["id"]
+        try:
+            thread = client.post("/api/v1/threads", headers=user_headers, json={"title": "Failed image"}).json()
+            response = client.post(
+                f"/api/v1/threads/{thread['id']}/image-generations",
+                headers={**user_headers, "Idempotency-Key": f"image-failed-{uuid.uuid4().hex}"},
+                json={"prompt": "生成一张图片", "model": "image-model", "channel_id": channel_id},
+            )
+
+            assert response.status_code == 502
+            assert response.json()["message"] == expected_message
+            messages = client.get(f"/api/v1/threads/{thread['id']}/messages", headers=user_headers).json()
+            assert [message["content_type"] for message in messages] == ["text", "text"]
+            assert messages[-1]["content"] == expected_message
+            assert messages[-1]["asset_ids"] == []
+            with SessionLocal() as db:
+                request = db.scalar(
+                    select(ModelRequest)
+                    .where(ModelRequest.thread_id == thread["id"], ModelRequest.modality == "image")
+                    .order_by(ModelRequest.created_at.desc())
+                )
+                assert request is not None and request.status == "failed"
+                assert request.error_code == "HTTPStatusError"
+                assert db.scalars(select(Asset).where(Asset.user_id == user["id"])).all() == []
+        finally:
+            assert client.delete(f"/api/v1/admin/model-channels/{channel_id}", headers=admin_headers).status_code == 204
+
+
 def test_stopping_direct_image_discards_late_provider_result(monkeypatch):
     """A late upstream response must not turn a stopped request into an image."""
 

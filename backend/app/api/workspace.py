@@ -592,6 +592,29 @@ def _persist_image_asset(db, user_id: str, message_id: str, content: bytes, mime
     return asset, f"/api/v1/assets/{asset.id}"
 
 
+def _image_failure_message(exc: Exception) -> str:
+    """Return a stable, user-safe explanation for an upstream image failure."""
+    response = getattr(exc, "response", None)
+    upstream_status = getattr(response, "status_code", None)
+    if upstream_status == 403:
+        return "图片模型渠道尚未开通生图权限。"
+    if upstream_status == 429:
+        return "图片模型渠道暂无可用图片配额，请稍后重试。"
+    return "图片生成失败，请检查图片模型渠道配置。"
+
+
+def _image_tool_failure_message(exc: Exception) -> str:
+    """Keep tool-result errors actionable without exposing raw provider details."""
+    response = getattr(exc, "response", None)
+    if getattr(response, "status_code", None) in {403, 429}:
+        return _image_failure_message(exc)
+    if isinstance(exc, HTTPException):
+        return str(exc.detail or "图片工具调用失败")[:500]
+    if isinstance(exc, (ValidationError, ValueError, OSError)):
+        return str(exc or "图片工具调用失败")[:500]
+    return _image_failure_message(exc)
+
+
 def _invoke_text_provider(channel, model: str, messages: list[dict], options: dict[str, Any], tools: list[dict] | None, tool_choice):
     kwargs = {
         "temperature": options.get("temperature"),
@@ -1185,13 +1208,13 @@ def _start_text_stream(
                                 image_request_row.status = "failed"
                                 image_request_row.error_code = type(exc).__name__[:90]
                                 image_request_row.latency_ms = now_ms(started)
-                            tool_payload = {"ok": False, "error": str(getattr(exc, "detail", None) or str(exc))[:500]}
+                            tool_payload = {"ok": False, "error": _image_tool_failure_message(exc)}
                         except Exception as exc:  # provider-specific failures become tool results
                             if image_request_row is not None and image_request_row.status == "running":
                                 image_request_row.status = "failed"
                                 image_request_row.error_code = type(exc).__name__[:90]
                                 image_request_row.latency_ms = now_ms(started)
-                            tool_payload = {"ok": False, "error": type(exc).__name__}
+                            tool_payload = {"ok": False, "error": _image_tool_failure_message(exc)}
                         finally:
                             if image_request_row is not None:
                                 active_streams.pop(image_request_row.id, None)
@@ -1616,16 +1639,23 @@ def _run_image_generation(thread_id: str, payload: ImageGenerationRequest, db, u
         request.status = "failed"
         request.error_code = type(exc).__name__[:90]
         request.latency_ms = now_ms(started)
-        assistant_message.content = "图片生成失败，请检查图片模型渠道配置。"
+        assistant_message.content = _image_failure_message(exc)
+        # A failed image call has no Asset. Persist it as text so history
+        # reloads render the failure message instead of treating it as a URL.
+        assistant_message.content_type = "text"
         db.commit()
         raise
     except Exception as exc:
         request.status = "failed"
         request.error_code = type(exc).__name__[:90]
         request.latency_ms = now_ms(started)
-        assistant_message.content = "图片生成失败，请检查图片模型渠道配置。"
+        failure_message = _image_failure_message(exc)
+        assistant_message.content = failure_message
+        # See the HTTPException branch above: do not leave a dangling image
+        # message when the provider rejects generation.
+        assistant_message.content_type = "text"
         db.commit()
-        raise HTTPException(status_code=502, detail="image generation failed") from exc
+        raise HTTPException(status_code=502, detail=failure_message) from exc
     finally:
         active_streams.pop(request.id, None)
 

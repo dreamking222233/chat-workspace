@@ -104,6 +104,16 @@ function apiHeaders(json = false): Record<string, string> {
   return { ...(json ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) }
 }
 
+async function apiErrorMessage(response: Response, fallback: string) {
+  const raw = await response.text()
+  try {
+    const parsed = JSON.parse(raw) as { message?: unknown; detail?: unknown }
+    const message = typeof parsed.message === 'string' ? parsed.message : typeof parsed.detail === 'string' ? parsed.detail : ''
+    if (message.trim()) return message.trim()
+  } catch { /* Non-JSON gateways can still return a useful plain-text response. */ }
+  return raw.trim() || fallback
+}
+
 function apiMessage(value: { id: string; role: Role; content: string; content_type?: string; asset_ids?: string[] }): Message {
   return { id: value.id, role: value.role, content: value.content, contentType: value.content_type, assetIds: value.asset_ids ?? [] }
 }
@@ -350,7 +360,7 @@ export function ChatWorkspace() {
       const event = block.match(/^event:\s*(.+)$/m)?.[1]
       const raw = block.match(/^data:\s*(.+)$/m)?.[1]
       if (!event || !raw) return
-      let data: { message_id?: string; user_message_id?: string; request_id?: string; delta?: string; content?: string; url?: string; asset_id?: string; tool_name?: string; tool_call_id?: string; mime_type?: string; arguments?: string; ok?: boolean; query?: string }
+      let data: { message_id?: string; user_message_id?: string; request_id?: string; delta?: string; content?: string; url?: string; asset_id?: string; tool_name?: string; tool_call_id?: string; mime_type?: string; arguments?: string; error?: string; ok?: boolean; query?: string }
       try { data = JSON.parse(raw) as typeof data } catch { return }
       if (data.request_id) requestId = data.request_id
       if (data.user_message_id && serverUserMessageId) {
@@ -377,7 +387,7 @@ export function ChatWorkspace() {
         if (data.tool_name === 'generate_image') setThreads((current) => current.map((thread) => thread.id === threadId ? { ...thread, messages: thread.messages.map((message) => message.id === serverMessageId ? { ...message, contentType: 'image_pending' } : message) } : thread))
       }
       if (event === 'tool.completed' && data.tool_name) {
-        setNotice(data.ok === false ? `${data.tool_name}调用失败` : `${data.tool_name}已完成`)
+        setNotice(data.ok === false ? data.error?.trim() || `${data.tool_name}调用失败` : `${data.tool_name}已完成`)
         if (data.tool_name === 'generate_image' && data.ok === false) setThreads((current) => current.map((thread) => thread.id === threadId ? { ...thread, messages: thread.messages.map((message) => message.id === serverMessageId && message.contentType === 'image_pending' ? { ...message, contentType: 'text' } : message) } : thread))
       }
       if (event === 'image.created' && data.message_id && data.url) {
@@ -385,7 +395,7 @@ export function ChatWorkspace() {
           if (thread.id !== threadId) return thread
           const messages = thread.messages.map((message) => message.id === serverMessageId && message.contentType === 'image_pending' ? { ...message, contentType: 'tool_pending' } : message)
           if (messages.some((message) => message.id === data.message_id)) return { ...thread, messages }
-          return { ...thread, messages: [...messages, { id: data.message_id!, role: 'assistant' as const, content: data.url!, contentType: 'image' }] }
+          return { ...thread, messages: [...messages, { id: data.message_id!, role: 'assistant' as const, content: data.url!, contentType: 'image', assetIds: data.asset_id ? [data.asset_id] : [] }] }
         }))
         setNotice('图片已生成')
       }
@@ -617,9 +627,13 @@ export function ChatWorkspace() {
     try {
       const key = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `image-${Date.now()}-${Math.random().toString(16).slice(2)}`
       const response = await fetch(`${API_BASE}/threads/${threadId}/image-generations`, { method: 'POST', headers: { ...apiHeaders(true), 'Idempotency-Key': key }, body: JSON.stringify({ prompt, model: selectedModel || undefined, channel_id: selectedChannelId || undefined, asset_ids: referenceAssets.map((asset) => asset.id), response_format: 'b64_json' }), signal: controller.signal })
-      if (!response.ok) throw new Error(await response.text())
-      const result = await response.json() as { message_id: string; user_message_id: string | null; url: string; model?: string }
-      setThreads((current) => current.map((thread) => thread.id === threadId ? { ...thread, title: thread.title === '新聊天' ? prompt.slice(0, 60) : thread.title, model: result.model ?? thread.model, messages: thread.messages.map((message) => message.id === localUserId && result.user_message_id ? { ...message, id: result.user_message_id } : message.id === assistantId ? { ...message, id: result.message_id, content: result.url, contentType: 'image' } : message) } : thread))
+      if (!response.ok) {
+        const failure = new Error(await apiErrorMessage(response, '图片生成失败，请检查图片模型渠道')) as Error & { status?: number }
+        failure.status = response.status
+        throw failure
+      }
+      const result = await response.json() as { message_id: string; user_message_id: string | null; asset_id?: string; url: string; model?: string }
+      setThreads((current) => current.map((thread) => thread.id === threadId ? { ...thread, title: thread.title === '新聊天' ? prompt.slice(0, 60) : thread.title, model: result.model ?? thread.model, messages: thread.messages.map((message) => message.id === localUserId && result.user_message_id ? { ...message, id: result.user_message_id } : message.id === assistantId ? { ...message, id: result.message_id, content: result.url, contentType: 'image', assetIds: result.asset_id ? [result.asset_id] : [] } : message) } : thread))
       setReferenceAssets([])
       setStreamingMessages((current) => { const next = { ...current }; delete next[threadId]; return next })
       setNotice('图片已生成')
@@ -628,13 +642,15 @@ export function ChatWorkspace() {
       setThreads((current) => current.map((thread) => thread.id === threadId ? {
         ...thread,
         // A user-initiated stop keeps the prompt in the conversation and only
-        // removes the optimistic image placeholder. Provider failures roll
-        // back both optimistic rows because the server rejected the request.
+        // removes the optimistic image placeholder. The non-abort branch
+        // reloads below because the server persists its failure message.
         messages: thread.messages.filter((message) => message.id !== assistantId && (controller.signal.aborted || message.id !== localUserId)),
       } : thread))
       if (!controller.signal.aborted) {
-        if (error instanceof Error && error.message.includes('403')) { setEntitlementActive(false); setEntitlementState('ready') }
-        setNotice(error instanceof Error && error.message.includes('403') ? '当前账户没有有效使用权限' : '图片生成失败，请检查图片模型渠道')
+        const status = error instanceof Error ? (error as Error & { status?: number }).status : undefined
+        if (status === 403) { setEntitlementActive(false); setEntitlementState('ready') }
+        setNotice(status === 403 ? '当前账户没有有效使用权限' : error instanceof Error && error.message ? error.message : '图片生成失败，请检查图片模型渠道')
+        void loadThreads()
       }
     }
     finally { streamRefs.current.delete(threadId) }
@@ -879,7 +895,8 @@ function MessageView({ message, streaming, onRegenerate }: { message: Message; s
   const searchActivities = message.activities?.filter((activity) => activity.type === 'search') ?? []
   const activeSearch = searchActivities[searchActivities.length - 1]
   const waitingForFirstToken = streaming && !message.content && !activeSearch
-  const content = message.contentType === 'image' && message.content ? <AssetPreview path={message.content} /> : <div className={`assistant-copy ${streaming ? 'streaming' : ''} ${waitingForFirstToken ? 'waiting' : ''}`} aria-busy={streaming}>
+  const isGeneratedImage = message.contentType === 'image' && Boolean(message.content) && Boolean(message.assetIds?.length) && isImageAssetPath(message.content)
+  const content = isGeneratedImage ? <AssetPreview path={message.content} /> : <div className={`assistant-copy ${streaming ? 'streaming' : ''} ${waitingForFirstToken ? 'waiting' : ''}`} aria-busy={streaming}>
     {activeSearch && streaming && !message.content
       ? <SearchActivity label={activeSearch.label} />
       : waitingForFirstToken
@@ -923,25 +940,36 @@ function ImageGenerationPlaceholder({ label = '正在创建图片' }: { label?: 
   </div>
 }
 
+function isImageAssetPath(path: string) {
+  return path.startsWith('/api/v1/assets/') || path.startsWith('data:image/')
+}
+
 function AssetPreview({ path }: { path: string }) {
   const [source, setSource] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
   useEffect(() => {
     let cancelled = false
     let objectUrl: string | null = null
     const load = async () => {
       try {
-        if (path.startsWith('http') || path.startsWith('data:')) { if (!cancelled) setSource(path); return }
+        setSource(null)
+        setFailed(false)
+        if (path.startsWith('data:image/')) { if (!cancelled) setSource(path); return }
+        if (!path.startsWith('/api/v1/assets/')) throw new Error('invalid image asset path')
         const response = await fetch(assetRequestUrl(path), { headers: apiHeaders() })
         if (!response.ok) throw new Error()
+        const contentType = response.headers?.get?.('content-type')?.toLowerCase() ?? ''
+        if (!contentType.startsWith('image/')) throw new Error('invalid image response')
         objectUrl = URL.createObjectURL(await response.blob())
         if (!cancelled) setSource(objectUrl)
-      } catch { if (!cancelled) setSource(null) }
+      } catch { if (!cancelled) { setSource(null); setFailed(true) } }
     }
     void load()
     return () => { cancelled = true; if (objectUrl) URL.revokeObjectURL(objectUrl) }
   }, [path])
+  if (failed) return <div className="assistant-copy" role="alert">图片资源加载失败，请稍后重试。</div>
   if (!source) return <ImageGenerationPlaceholder label="正在加载图片" />
-  return <div className="image-result"><img className="assistant-image" src={source} alt="生成的图片" /><a className="image-download" href={source} download title="下载图片"><Download size={15} />下载图片</a></div>
+  return <div className="image-result"><img className="assistant-image" src={source} alt="生成的图片" onError={() => { setSource(null); setFailed(true) }} /><a className="image-download" href={source} download title="下载图片"><Download size={15} />下载图片</a></div>
 }
 
 function AuthenticatedAssetImage({ path, alt }: { path: string; alt: string }) {
