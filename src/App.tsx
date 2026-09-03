@@ -28,7 +28,7 @@ import {
 } from 'lucide-react'
 import ProjectWorkspacePage from './components/ProjectWorkspacePage'
 import SelectMenu from './components/SelectMenu'
-import { encodeVisionImageBlob, type VisionMimeType } from './utils/mediaEncode'
+import { encodeVisionImageBlob, VISION_MAX_TOTAL_ENCODED_CHARS, type VisionMimeType } from './utils/mediaEncode'
 
 type Role = 'user' | 'assistant'
 type WorkspaceView = '项目' | '已归档'
@@ -555,7 +555,7 @@ export function ChatWorkspace() {
         const preferredMimeTypes = configuredMimeTypes
           .map((value) => String(value).trim().toLowerCase())
           .filter((value): value is VisionMimeType => value === 'image/jpeg' || value === 'image/png')
-        mediaInputs = await Promise.all(selectedAssets.map(async (asset) => {
+        const encodedImages = await Promise.all(selectedAssets.map(async (asset) => {
           let blob: Blob
           if (asset.file) {
             blob = asset.file
@@ -564,16 +564,23 @@ export function ChatWorkspace() {
             if (!response.ok) throw new Error('图片读取失败')
             blob = await response.blob()
           }
-          const encoded = await encodeVisionImageBlob(blob, undefined, preferredMimeTypes.length ? preferredMimeTypes : undefined)
-          return {
-            type: 'image' as const,
-            data_url: encoded.dataUrl,
-            asset_id: asset.id,
-            mime_type: encoded.mimeType,
-            width: encoded.width,
-            height: encoded.height,
-            detail: inputImageDetail,
-          }
+          return await encodeVisionImageBlob(blob, undefined, preferredMimeTypes.length ? preferredMimeTypes : undefined)
+        }))
+        const maxImageBytes = Math.max(0, Number(selectedTextTarget?.input_image_max_bytes ?? 0))
+        if (maxImageBytes && encodedImages.some((item) => item.decodedSize > maxImageBytes)) {
+          throw new Error(`图片超过当前文本模型的视觉输入大小限制（${maxImageBytes} 字节）`)
+        }
+        if (encodedImages.reduce((total, item) => total + item.encodedLength, 0) > VISION_MAX_TOTAL_ENCODED_CHARS) {
+          throw new Error('本轮视觉输入超过 3 MiB 编码限制')
+        }
+        mediaInputs = encodedImages.map((encoded, index) => ({
+          type: 'image' as const,
+          data_url: encoded.dataUrl,
+          asset_id: selectedAssets[index].id,
+          mime_type: encoded.mimeType,
+          width: encoded.width,
+          height: encoded.height,
+          detail: inputImageDetail,
         }))
       } catch (error) {
         setNotice(error instanceof Error ? error.message : '图片处理失败，请重试')
@@ -596,7 +603,12 @@ export function ChatWorkspace() {
     // A direct image request records its image model on the thread. When the
     // composer returns to text/automatic mode, never submit that image-only
     // model as an explicit text target; let the backend resolve a text channel.
-    void startRemoteStream(threadId, assistantId, content, selectedTextTarget?.model ?? activeThreadTextModel, userMessageId, { assetIds, mediaInputs, channelId: selectedTextTarget?.channel_id ?? null })
+    // With the automatic model selector, a previous thread model is only a
+    // preference. Let the server fall back to another enabled vision-capable
+    // text model when that previous model is text-only; an explicitly selected
+    // model/channel remains a strict routing choice.
+    const requestTextModel = selectedTextTarget?.model ?? (selectedAssets.length ? undefined : activeThreadTextModel)
+    void startRemoteStream(threadId, assistantId, content, requestTextModel, userMessageId, { assetIds, mediaInputs, channelId: selectedTextTarget?.channel_id ?? null })
   }
 
   const generateImage = async (threadId: string, assistantId: string, localUserId: string, prompt: string) => {

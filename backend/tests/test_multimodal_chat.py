@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import uuid
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -49,14 +50,107 @@ def test_channel_level_visual_policy_arrays_round_trip_without_modality_filterin
     assert update.capabilities == create.capabilities
 
 
+def test_automatic_visual_route_falls_back_from_a_text_only_thread_model():
+    with SessionLocal() as db:
+        suffix = uuid.uuid4().hex
+        text_only = ModelChannel(
+            name=f"text-only-{suffix}",
+            base_url="https://text-only.example/v1",
+            modality="text",
+            priority=1,
+            models_json=[f"plain-{suffix}"],
+            capabilities_json={"supports_input_image": False},
+        )
+        vision = ModelChannel(
+            name=f"vision-fallback-{suffix}",
+            base_url="https://vision.example/v1",
+            modality="text",
+            priority=2,
+            models_json=[f"vision-{suffix}"],
+            capabilities_json={"supports_input_image": True},
+        )
+        db.add_all([text_only, vision])
+        db.commit()
+        model, channel = workspace_api.resolve_text_channel(
+            db,
+            requested_model=None,
+            thread_model=text_only.models_json[0],
+            channel_id=None,
+            require_vision=True,
+        )
+        assert model == vision.models_json[0]
+        assert channel.id == vision.id
+
+
+def test_automatic_visual_route_checks_later_channel_when_model_id_is_shared():
+    with SessionLocal() as db:
+        suffix = uuid.uuid4().hex
+        model = f"shared-{suffix}"
+        text_only = ModelChannel(
+            name=f"shared-text-only-{suffix}",
+            base_url="https://text-only.example/v1",
+            modality="text",
+            priority=1,
+            models_json=[model],
+            capabilities_json={"supports_input_image": False},
+        )
+        vision = ModelChannel(
+            name=f"shared-vision-{suffix}",
+            base_url="https://vision.example/v1",
+            modality="text",
+            priority=2,
+            models_json=[model],
+            capabilities_json={"supports_input_image": True},
+        )
+        db.add_all([text_only, vision])
+        db.commit()
+        selected_model, selected_channel = workspace_api.resolve_text_channel(
+            db,
+            requested_model=None,
+            thread_model=None,
+            channel_id=None,
+            require_vision=True,
+        )
+        assert selected_model == model
+        assert selected_channel.id == vision.id
+
+
+def test_asset_upload_creates_a_missing_runtime_directory(monkeypatch, tmp_path: Path):
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    storage_dir = tmp_path / "new-runtime-volume" / "assets"
+    monkeypatch.setattr(workspace_api.get_settings(), "storage_dir", str(storage_dir))
+    with TestClient(app) as client:
+        suffix = uuid.uuid4().hex
+        registered = client.post(
+            "/api/v1/auth/register",
+            json={"email": f"upload-{suffix}@example.com", "password": "password123", "display_name": "Upload"},
+        )
+        assert registered.status_code == 201
+        headers = {"Authorization": f"Bearer {registered.json()['access_token']}"}
+        uploaded = client.post(
+            "/api/v1/assets/upload",
+            headers=headers,
+            files={"file": ("fixture.png", b"\x89PNG\r\n\x1a\nfixture", "image/png")},
+        )
+        assert uploaded.status_code == 200
+        assert storage_dir.is_dir()
+        with SessionLocal() as db:
+            asset = db.get(Asset, uploaded.json()["id"])
+            assert asset is not None
+            assert Path(asset.storage_key).is_file()
+
+
 def test_text_media_input_validates_data_url_signature_and_size():
     item = TextMediaInput(
         data_url=image_data_url(),
-        asset_id="asset-1",
+        asset_id=" asset-1 ",
         mime_type="image/jpeg",
         width=640,
         height=480,
     )
+    assert item.asset_id == "asset-1"
     assert item.decoded_size > 0
     with pytest.raises(ValidationError):
         TextMediaInput(

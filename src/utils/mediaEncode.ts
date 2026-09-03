@@ -1,4 +1,5 @@
 export const VISION_MAX_ENCODED_CHARS = 1_572_864
+export const VISION_MAX_TOTAL_ENCODED_CHARS = 3_145_728
 export const VISION_MAX_INPUT_BYTES = 20 * 1024 * 1024
 
 export interface EncodedVisionImage {

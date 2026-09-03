@@ -462,26 +462,49 @@ def resolve_text_channel(
             for possible in db.scalars(select(ModelChannel).where(ModelChannel.enabled.is_(True)).order_by(ModelChannel.priority.asc())).all():
                 if candidate in (possible.models_json or []) and "text" in model_capabilities(possible, candidate) and _channel_supports_vision(possible, candidate):
                     return candidate, possible
+            # When the model came from the thread's automatic preference (as
+            # opposed to an explicit request), continue to the next enabled
+            # vision-capable text model instead of making an otherwise valid
+            # image upload fail just because the previous turn used a
+            # text-only model.
+            if not requested:
+                enabled_channels = db.scalars(
+                    select(ModelChannel)
+                    .where(ModelChannel.enabled.is_(True))
+                    .order_by(ModelChannel.priority.asc())
+                ).all()
+                for possible in enabled_channels:
+                    for possible_model in possible.models_json or []:
+                        possible_model = str(possible_model)
+                        if "text" in model_capabilities(possible, possible_model) and _channel_supports_vision(possible, possible_model):
+                            return possible_model, possible
         if requested:
             detail = "no enabled vision text model channel" if require_vision else f"no enabled text model channel for '{requested}'"
             raise HTTPException(status_code=503, detail=detail)
 
-    available = available_models(db, "text")
-    if not available:
+    # Walk enabled channels directly instead of resolving through
+    # ``choose_channel`` a second time.  A model ID may legitimately be
+    # published by more than one channel; resolving the first occurrence and
+    # then retrying that same ID would otherwise hide a later vision-capable
+    # channel when this is a brand-new thread with no model preference.
+    enabled_channels = db.scalars(
+        select(ModelChannel)
+        .where(ModelChannel.enabled.is_(True))
+        .order_by(ModelChannel.priority.asc(), ModelChannel.created_at.asc())
+    ).all()
+    saw_text_model = False
+    for possible in enabled_channels:
+        for possible_model in possible.models_json or []:
+            possible_model = str(possible_model)
+            if "text" not in model_capabilities(possible, possible_model):
+                continue
+            saw_text_model = True
+            if require_vision and not _channel_supports_vision(possible, possible_model):
+                continue
+            return possible_model, possible
+    if not saw_text_model:
         raise HTTPException(status_code=503, detail="no enabled text model channel")
-    model = available[0][0]
-    channel = choose_channel(db, model, "text")
-    if require_vision and (channel is None or not _channel_supports_vision(channel, model)):
-        for possible_model, _, _ in available:
-            possible = choose_channel(db, possible_model, "text")
-            if possible is not None and _channel_supports_vision(possible, possible_model):
-                model, channel = possible_model, possible
-                break
-        else:
-            raise HTTPException(status_code=503, detail="no enabled vision text model channel")
-    if channel is None:  # pragma: no cover - guarded by available_models
-        raise HTTPException(status_code=503, detail="no enabled text model channel")
-    return model, channel
+    raise HTTPException(status_code=503, detail="no enabled vision text model channel")
 
 
 def _channel_supports_vision(channel: ModelChannel, model: str) -> bool:
@@ -1692,7 +1715,12 @@ def upload_asset(db: DbSession, user: CurrentUser, file: UploadFile = File(...))
         raise HTTPException(status_code=413, detail="asset too large")
     content = b"".join(chunks)
     suffix = Path(file.filename or "upload.bin").suffix[:10]
-    storage = Path(get_settings().storage_dir) / f"upload-{os.urandom(10).hex()}{suffix}"
+    # The upload directory may not exist on a fresh deployment (it is normally
+    # a mounted, ignored runtime volume). Create it before writing the first
+    # user asset so the text-vision upload path works without a manual mkdir.
+    storage_dir = Path(get_settings().storage_dir)
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    storage = storage_dir / f"upload-{os.urandom(10).hex()}{suffix}"
     storage.write_bytes(content)
     asset = Asset(user_id=user.id, kind="upload", storage_key=str(storage), mime_type=file.content_type, size_bytes=len(content))
     db.add(asset)

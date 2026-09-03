@@ -31,6 +31,16 @@ class TextMediaInput(BaseModel):
     height: int | None = Field(default=None, ge=1, le=20_000)
     detail: Literal["auto", "low", "high"] = "auto"
 
+    @field_validator("asset_id", mode="before")
+    @classmethod
+    def normalize_asset_id(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("asset_id must not be blank")
+        return normalized
+
     @model_validator(mode="after")
     def validate_data_url(self):
         match = VISION_DATA_URL_PATTERN.fullmatch(self.data_url)

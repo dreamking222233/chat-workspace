@@ -673,9 +673,36 @@ describe('ChatWorkspace remote stream', () => {
       asset_ids: ['asset-1'],
       media_inputs: [{ type: 'image', asset_id: 'asset-1', mime_type: 'image/png', detail: 'auto' }],
     })
+    expect(body).not.toHaveProperty('model')
     expect(body.media_inputs[0].data_url).toMatch(/^data:image\/png;base64,/)
     await act(async () => { delayedStream.release() })
     expect(await screen.findByText('已处理')).toBeTruthy()
+  })
+
+  it('checks a selected text model image-byte limit before opening the stream', async () => {
+    const thread = { id: 'thread-asset-limit', title: '新聊天', model: 'text-model', messages: [] }
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (init?.method === 'POST' && url.endsWith('/assets/upload')) return jsonResponse({ id: 'asset-limit', url: '/api/v1/assets/asset-limit', mime_type: 'image/png', size_bytes: 3 })
+      if (url.includes('/threads?include_archived=true')) return jsonResponse([])
+      if (url.endsWith('/threads')) return jsonResponse([thread])
+      if (url.endsWith('/projects')) return jsonResponse([])
+      if (url.endsWith('/models')) return jsonResponse([{ model: 'text-model', modality: 'text', channel_name: '渠道', channel_id: 'channel-1', capabilities: ['text'], supports_input_image: true, input_image_max_bytes: 2 }])
+      return errorResponse(404)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ChatWorkspace />)
+    await waitFor(() => expect(screen.getByLabelText('选择模型')).toBeTruthy())
+    await chooseModel('网页版·text-model')
+    fireEvent.change(screen.getByLabelText('选择参考图片'), { target: { files: [new File(['png'], 'reference.png', { type: 'image/png' })] } })
+    expect(await screen.findByText(/已上传 1 张图片/)).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('消息'), { target: { value: '识别图片' } })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '发送' })) })
+
+    expect(await screen.findByText(/视觉输入大小限制/)).toBeTruthy()
+    expect(fetchMock.mock.calls.some(([input, init]) => init?.method === 'POST' && String(input).includes('/messages/stream'))).toBe(false)
+    expect((screen.getByLabelText('消息') as HTMLTextAreaElement).value).toBe('识别图片')
   })
 
   it('does not reveal model names when the account is not entitled', async () => {
