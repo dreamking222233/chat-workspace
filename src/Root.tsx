@@ -5,9 +5,9 @@ import AdminModelChannelsPage from './components/AdminModelChannelsPage'
 import AdminUsersPage from './components/AdminUsersPage'
 import AdminUsagePage from './components/AdminUsagePage'
 import LandingPage from './components/LandingPage'
+import { API_BASE } from './utils/api'
 
 type User = { id: string; email: string; display_name: string; role: 'user' | 'admin'; status: string }
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api/v1'
 const ADMIN_PAGES = {
   '/admin/model-channels': { page: 'channels', title: '模型渠道' },
   '/admin/users': { page: 'users', title: '用户管理' },

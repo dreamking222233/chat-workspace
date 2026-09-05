@@ -29,6 +29,7 @@ import EffortSlider, { type ReasoningEffort } from './components/EffortSlider'
 import ProjectWorkspacePage from './components/ProjectWorkspacePage'
 import SelectMenu from './components/SelectMenu'
 import { encodeVisionImageBlob, VISION_MAX_TOTAL_ENCODED_CHARS, type VisionMimeType } from './utils/mediaEncode'
+import { API_BASE } from './utils/api'
 
 type Role = 'user' | 'assistant'
 type WorkspaceView = '项目' | '已归档'
@@ -88,7 +89,6 @@ const navItems: Array<{ label: '新聊天' | WorkspaceView; icon: typeof Pencil 
   { label: '项目', icon: Folder },
   { label: '已归档', icon: Folder },
 ]
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api/v1'
 const wait = (milliseconds: number) => new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds))
 function apiHeaders(json = false): Record<string, string> {
   const token = localStorage.getItem('access_token')

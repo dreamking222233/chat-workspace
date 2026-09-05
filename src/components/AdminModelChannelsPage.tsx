@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Check, KeyRound, List, LoaderCircle, Pencil, Plus, RefreshCw, Save, Server, Trash2, X } from 'lucide-react'
 import { formatBeijingTime } from '../utils/beijingTime'
+import { API_BASE } from '../utils/api'
 
 type Modality = 'text' | 'image' | 'both'
 type ChannelType = 'official' | 'codex'
@@ -43,7 +44,6 @@ interface ChannelSyncResult {
 }
 
 const emptyDraft: ChannelDraft = { name: '', base_url: '', api_key: '', modality: 'text', channel_type: 'official', priority: 100, enabled: true, capabilities: '{}' }
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api/v1'
 const MODEL_SYNC_INTERVAL_MS = 60_000
 
 export default function AdminModelChannelsPage({ onBack, onNotice }: { onBack: () => void; onNotice: (message: string) => void }) {

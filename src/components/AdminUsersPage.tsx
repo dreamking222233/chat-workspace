@@ -1,12 +1,12 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react'
 import { Ban, CalendarClock, Check, ChevronLeft, ChevronRight, LoaderCircle, PauseCircle, PlayCircle, Plus, RefreshCw, Search, ShieldOff, UserRound, X } from 'lucide-react'
 import { formatBeijingDate, formatBeijingDateTime } from '../utils/beijingTime'
+import { API_BASE } from '../utils/api'
 
 type AdminUser = { id: string; email: string; display_name: string; role: string; status: string; created_at: string; entitlement_expires_at: string | null; entitlement_active: boolean }
 type Entitlement = { id: string; starts_at: string; expires_at: string; status: string; active: boolean }
 type UserDetail = { user: AdminUser; entitlement: Entitlement | null; projects: number; threads: number; requests: number }
 type LoadState = 'loading' | 'ready' | 'error'
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api/v1'
 const PAGE_SIZE = 20
 
 export default function AdminUsersPage({ onNotice }: { onNotice: (message: string) => void }) {

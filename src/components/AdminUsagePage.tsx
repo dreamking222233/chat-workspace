@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { BarChart3, ChevronLeft, ChevronRight, Download, LoaderCircle, RefreshCw, Search, X } from 'lucide-react'
 import { beijingDateBoundary, formatBeijingDateTime } from '../utils/beijingTime'
+import { API_BASE } from '../utils/api'
 
 type Usage = { id: string; user_id: string; user_email?: string; thread_id?: string; model: string; modality: string; status: string; input_tokens: number | null; output_tokens: number | null; latency_ms: number | null; created_at: string }
 type LoadState = 'loading' | 'ready' | 'error'
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api/v1'
 const PAGE_SIZE = 50
 
 export default function AdminUsagePage({ onNotice }: { onNotice: (message: string) => void }) {
