@@ -376,14 +376,31 @@ button { color: inherit; cursor: pointer; }
 .think-button { height: 40px; display: flex; align-items: center; gap: 6px; padding: 0 7px; border: 0; border-radius: 18px; color: #737373; background: transparent; font-size: 14px; }
 .think-button:hover, .think-button.active { color: #1f6fd0; background: #edf5ff; }
 .think-button:disabled { opacity: .42; cursor: not-allowed; }
-.reasoning-wrap { position: relative; flex: 0 0 auto; }
-.reasoning-menu { position: absolute; z-index: 18; right: 0; bottom: 45px; width: 244px; padding: 6px; border: 1px solid #e2e2e2; border-radius: 13px; background: #fff; box-shadow: 0 10px 30px rgba(0, 0, 0, .14); }
-.reasoning-menu button { width: 100%; min-height: 48px; display: flex; align-items: center; gap: 7px; padding: 6px 8px; border: 0; border-radius: 8px; color: #222; background: transparent; text-align: left; }
-.reasoning-menu button:hover { background: #f2f5f8; }
-.reasoning-option-check { width: 18px; flex: 0 0 18px; display: flex; align-items: center; color: #1f6fd0; }
-.reasoning-menu button > span:last-child { display: flex; flex-direction: column; gap: 2px; }
-.reasoning-menu strong { font-size: 13px; font-weight: 600; }
-.reasoning-menu small { color: #7a7a7a; font-size: 11px; }
+.effort-wrap { position: relative; flex: 0 0 auto; }
+.effort-trigger { flex: 0 0 auto; }
+.effort-trigger-text { position: relative; display: inline-grid; justify-items: start; }
+.effort-trigger-sizer { visibility: hidden; font-style: normal; white-space: nowrap; pointer-events: none; }
+.effort-trigger-value { position: absolute; inset: 0; overflow: hidden; white-space: nowrap; }
+.effort-popover { position: absolute; z-index: 24; left: 50%; bottom: 50px; width: min(280px, calc(100vw - 24px)); padding: 14px 16px 16px; border-radius: 22px; background: #fff; box-shadow: 0 10px 32px rgba(20, 16, 40, .14), 0 0 0 1px rgba(0, 0, 0, .05); transform: translateX(-50%); animation: effort-popover-in .2s cubic-bezier(.22, .9, .28, 1); }
+.effort-head { position: relative; display: flex; align-items: center; justify-content: center; min-height: 28px; margin-bottom: 14px; }
+.effort-head-icon { position: absolute; left: 2px; top: 50%; transform: translateY(-50%); color: #9aa0a6; }
+.effort-head-title { color: #111; font-size: 15px; font-weight: 500; letter-spacing: .01em; }
+.effort-head-title em { margin-left: 5px; font-style: normal; font-weight: 650; }
+.effort-slider { position: relative; height: 28px; outline: 0; touch-action: none; user-select: none; cursor: grab; }
+.effort-popover.dragging .effort-slider { cursor: grabbing; }
+.effort-track { position: relative; height: 28px; overflow: hidden; border-radius: 14px; background: #ececf1; container-type: inline-size; }
+.effort-fill { position: relative; height: 100%; min-width: 28px; overflow: hidden; border-radius: 14px; transition: width .22s cubic-bezier(.22, .9, .28, 1); box-shadow: 0 0 16px rgba(124, 92, 252, calc(var(--effort-glow, 0) * .55)); }
+.effort-fill-spectrum { position: absolute; inset: 0 auto 0 0; width: 100cqw; background: linear-gradient(90deg, #1b2156 0%, #2e3aad 22%, #5b4ee8 48%, #8b5cf6 70%, #c084fc 100%); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .28); }
+.effort-fill-sheen { position: absolute; inset: -20% auto -20% -30%; width: 42%; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .22), transparent); animation: effort-sheen 2.8s ease-in-out infinite; }
+.effort-sparks { position: absolute; inset: 0 auto 0 0; width: 100cqw; pointer-events: none; }
+.effort-sparks i { position: absolute; border-radius: 50%; background: #fff; box-shadow: 0 0 5px rgba(255, 255, 255, .9); animation: effort-spark 2.6s ease-in-out infinite; }
+.effort-thumb { position: absolute; z-index: 2; top: 50%; width: 28px; height: 28px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(20, 16, 40, .22), 0 0 0 1px rgba(0, 0, 0, .04); transform: translateY(-50%); transition: left .22s cubic-bezier(.22, .9, .28, 1), transform .16s ease; pointer-events: none; }
+.effort-popover.dragging .effort-fill, .effort-popover.dragging .effort-thumb { transition: none; }
+.effort-popover.dragging .effort-thumb { transform: translateY(-50%) scale(1.08); }
+.effort-slider:focus-visible .effort-thumb { box-shadow: 0 0 0 3px rgba(124, 92, 252, .28), 0 1px 4px rgba(20, 16, 40, .22); }
+@keyframes effort-popover-in { from { opacity: 0; transform: translateX(-50%) translateY(8px) scale(.96); } to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); } }
+@keyframes effort-spark { 0%, 100% { transform: translate(0, 0) scale(.85); } 50% { transform: translate(1.5px, -2.5px) scale(1.15); } }
+@keyframes effort-sheen { 0% { transform: translateX(0); opacity: 0; } 18% { opacity: .55; } 55% { opacity: .12; } 100% { transform: translateX(280%); opacity: 0; } }
 .select-menu { position: relative; flex: 0 1 148px; max-width: 148px; min-width: 72px; }
 .select-menu-trigger { width: 100%; height: 40px; display: inline-flex; align-items: center; gap: 4px; padding: 0 8px; border: 0; border-radius: 8px; color: #666; background: transparent; font-size: 11px; }
 .select-menu-trigger > span:first-child { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
@@ -576,6 +593,7 @@ button { color: inherit; cursor: pointer; }
   .composer-icon { width: 36px; height: 36px; flex-basis: 36px; }
   .think-button span { display: none; }
   .think-button { width: 36px; justify-content: center; padding: 0; }
+  .effort-popover { position: fixed; left: 50%; right: auto; bottom: 86px; transform: translateX(-50%); animation-name: effort-popover-in; }
   .voice-button { width: 38px; height: 38px; flex-basis: 38px; }
   .workspace-page { padding: 68px 16px 30px; }
   .workspace-subtitle { margin-left: 0; }
@@ -596,7 +614,7 @@ button { color: inherit; cursor: pointer; }
   .composer { gap: 1px; }
   .composer textarea { padding-right: 2px; }
   .composer-icon:first-child { width: 34px; flex-basis: 34px; }
-  .think-button { display: none; }
+  .think-button[aria-pressed] { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -604,4 +622,7 @@ button { color: inherit; cursor: pointer; }
   .landing-feature-card { transition: none; }
   .landing-feature-card:hover { transform: none; }
   .model-waiting-dot, .cursor, .image-generation-pattern, .search-activity svg { animation: none; }
+  .effort-popover { animation: none; }
+  .effort-fill, .effort-thumb { transition: none; }
+  .effort-sparks i, .effort-fill-sheen { animation: none; }
 }

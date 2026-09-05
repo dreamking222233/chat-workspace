@@ -67,6 +67,18 @@ async function chooseModel(optionName: string | RegExp) {
   fireEvent.click(await screen.findByRole('option', { name: optionName }))
 }
 
+const EFFORT_LABELS = ['关闭', '低', '中', '高', '超高'] as const
+
+function chooseEffort(label: (typeof EFFORT_LABELS)[number]) {
+  const trigger = screen.getByRole('button', { name: /思考等级：/ })
+  if (trigger.getAttribute('aria-expanded') !== 'true') fireEvent.click(trigger)
+  const slider = screen.getByRole('slider', { name: '选择思考等级' })
+  const current = EFFORT_LABELS.indexOf((slider.getAttribute('aria-valuetext') ?? '关闭') as (typeof EFFORT_LABELS)[number])
+  const target = EFFORT_LABELS.indexOf(label)
+  const key = target > current ? 'ArrowRight' : 'ArrowLeft'
+  for (let i = 0; i < Math.abs(target - current); i += 1) fireEvent.keyDown(slider, { key })
+}
+
 function immediateSseResponse(content: string): Response {
   const encoded = new TextEncoder().encode(content)
   let delivered = false
@@ -322,10 +334,8 @@ describe('ChatWorkspace remote stream', () => {
     render(<ChatWorkspace />)
     await waitFor(() => expect(screen.getByLabelText('选择模型')).toBeTruthy())
     fireEvent.click(screen.getByRole('button', { name: '思考等级：关闭' }))
-    expect(screen.getByRole('menuitemradio', { name: /^低/ })).toBeTruthy()
-    expect(screen.getByRole('menuitemradio', { name: /^中/ })).toBeTruthy()
-    expect(screen.getByRole('menuitemradio', { name: /^高/ })).toBeTruthy()
-    fireEvent.click(screen.getByRole('menuitemradio', { name: new RegExp(`^${label}`) }))
+    expect(screen.getByRole('slider', { name: '选择思考等级' })).toBeTruthy()
+    chooseEffort(label as '低' | '中' | '高' | '超高')
     expect(screen.getByRole('button', { name: `思考等级：${label}` })).toBeTruthy()
     await chooseModel(new RegExp(`·${model}$`))
     fireEvent.change(screen.getByLabelText('消息'), { target: { value: '复杂问题' } })
@@ -354,10 +364,8 @@ describe('ChatWorkspace remote stream', () => {
 
     render(<ChatWorkspace />)
     await waitFor(() => expect(screen.getByLabelText('选择模型')).toBeTruthy())
-    fireEvent.click(screen.getByRole('button', { name: '思考等级：关闭' }))
-    fireEvent.click(screen.getByRole('menuitemradio', { name: /^高/ }))
-    fireEvent.click(screen.getByRole('button', { name: '思考等级：高' }))
-    fireEvent.click(screen.getByRole('menuitemradio', { name: /^关闭思考/ }))
+    chooseEffort('高')
+    chooseEffort('关闭')
     fireEvent.change(screen.getByLabelText('消息'), { target: { value: '普通问题' } })
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '发送' })) })
 
@@ -635,8 +643,7 @@ describe('ChatWorkspace remote stream', () => {
 
     render(<ChatWorkspace />)
     expect(await screen.findByText('原回复')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: '思考等级：关闭' }))
-    fireEvent.click(screen.getByRole('menuitemradio', { name: /^高/ }))
+    chooseEffort('高')
     fireEvent.click(screen.getByRole('button', { name: '图片', pressed: false }))
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '重新生成' })) })
 

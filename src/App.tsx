@@ -4,7 +4,6 @@ import remarkGfm from 'remark-gfm'
 import {
   ArrowLeft,
   ArrowUp,
-  Brain,
   Check,
   Copy,
   Download,
@@ -26,6 +25,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
+import EffortSlider, { type ReasoningEffort } from './components/EffortSlider'
 import ProjectWorkspacePage from './components/ProjectWorkspacePage'
 import SelectMenu from './components/SelectMenu'
 import { encodeVisionImageBlob, VISION_MAX_TOTAL_ENCODED_CHARS, type VisionMimeType } from './utils/mediaEncode'
@@ -33,7 +33,6 @@ import { encodeVisionImageBlob, VISION_MAX_TOTAL_ENCODED_CHARS, type VisionMimeT
 type Role = 'user' | 'assistant'
 type WorkspaceView = '项目' | '已归档'
 type LoadState = 'loading' | 'ready' | 'error'
-type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh'
 
 interface Message {
   id: string
@@ -91,14 +90,6 @@ const navItems: Array<{ label: '新聊天' | WorkspaceView; icon: typeof Pencil 
 ]
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api/v1'
 const wait = (milliseconds: number) => new Promise<void>((resolve) => window.setTimeout(resolve, milliseconds))
-const reasoningOptions: Array<{ value: ReasoningEffort | null; label: string; description: string }> = [
-  { value: null, label: '关闭思考', description: '使用模型默认速度' },
-  { value: 'low', label: '低', description: '快速完成简单任务' },
-  { value: 'medium', label: '中', description: '平衡速度与推理深度' },
-  { value: 'high', label: '高', description: '深入处理复杂问题' },
-  { value: 'xhigh', label: '超高', description: '最大化推理深度' },
-]
-
 function apiHeaders(json = false): Record<string, string> {
   const token = localStorage.getItem('access_token')
   return { ...(json ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) }
@@ -852,7 +843,7 @@ export function ChatWorkspace() {
                 <div className="attachment-wrap"><button type="button" className={`composer-icon ${attachmentOpen ? 'active' : ''}`} title="添加图片" aria-label="添加图片" aria-expanded={attachmentOpen} disabled={uploading || encodingVision} onClick={() => setAttachmentOpen((value) => !value)}><Plus size={22} /></button>{attachmentOpen && <div className="attachment-menu"><button type="button" onClick={() => document.getElementById('image-upload-input')?.click()}><Image size={17} />{uploading ? '正在上传…' : imageMode ? '添加参考图' : '添加图片并识别'}</button></div>}<input id="image-upload-input" aria-label="选择参考图片" hidden type="file" accept="image/*" multiple onChange={(event) => { const files = event.currentTarget.files; if (files?.length) void uploadAttachment(files); event.currentTarget.value = '' }} /></div>
                 <textarea ref={textareaRef} rows={1} value={draft} placeholder="有问题，随便问" aria-label="消息" onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send() } }} />
                 <button type="button" className={`think-button ${imageMode ? 'active' : ''}`} aria-pressed={imageMode} onClick={() => { setImageMode((value) => !value); setReasoningMenuOpen(false); setSelectedModel(''); setSelectedChannelId(null) }}><Image size={19} /><span>图片</span></button>
-                <div className="reasoning-wrap"><button type="button" className={`think-button ${reasoningEffort ? 'active' : ''}`} aria-label={`思考等级：${reasoningEffort ? reasoningOptions.find((item) => item.value === reasoningEffort)?.label : '关闭'}`} aria-expanded={reasoningMenuOpen} disabled={imageMode} onClick={() => setReasoningMenuOpen((value) => !value)}><Brain size={19} /><span>{reasoningEffort ? `思考 · ${reasoningOptions.find((item) => item.value === reasoningEffort)?.label}` : '思考'}</span></button>{reasoningMenuOpen && !imageMode && <div className="reasoning-menu" role="menu" aria-label="选择思考等级">{reasoningOptions.map((item) => <button type="button" role="menuitemradio" aria-checked={reasoningEffort === item.value} key={item.value ?? 'off'} onClick={() => { setReasoningEffort(item.value); setReasoningMenuOpen(false) }}><span className="reasoning-option-check">{reasoningEffort === item.value && <Check size={15} />}</span><span><strong>{item.label}</strong><small>{item.description}</small></span></button>)}</div>}</div>
+                <EffortSlider value={reasoningEffort} open={reasoningMenuOpen} disabled={imageMode} onChange={setReasoningEffort} onOpenChange={setReasoningMenuOpen} />
                 {((entitlementState === 'ready' && !entitlementActive) || availableModelOptions.length > 0) && <SelectMenu ariaLabel="选择模型" value={selectedChannelId && selectedModel ? `${selectedChannelId}::${selectedModel}` : selectedModel} placeholder="自动模型" header="自动模型" locked={!entitlementActive} options={entitlementActive ? availableModelOptions.map((item) => ({ value: modelOptionValue(item), label: modelOptionLabel(item) })) : []} onLocked={() => setNotice('当前账户尚未开通使用权限，请联系管理员。')} onOpenChange={(open) => { if (open) setReasoningMenuOpen(false) }} onChange={(value) => { const next = parseModelValue(value); setSelectedModel(next.model); setSelectedChannelId(next.channelId) }} />}
                 <button type={activeStreaming ? 'button' : 'submit'} disabled={activeStreaming ? stoppingThreadId === activeThread.id : !draft.trim() || uploading || encodingVision || entitlementState !== 'ready' || !entitlementActive || modelsState !== 'ready' || !availableModelOptions.length} className={`voice-button ${draft.trim() ? 'send-ready' : ''}`} title={activeStreaming ? stoppingThreadId === activeThread.id ? '正在停止' : '停止生成' : uploading ? '正在上传图片' : encodingVision ? '正在处理图片' : '发送'} aria-label={activeStreaming ? stoppingThreadId === activeThread.id ? '正在停止' : '停止生成' : uploading ? '正在上传图片' : encodingVision ? '正在处理图片' : '发送'} onClick={() => { if (activeStreaming) void stopStreaming() }}>{activeStreaming ? <Square size={17} fill="currentColor" /> : uploading || encodingVision ? <RefreshCw size={17} className="spin" /> : <ArrowUp size={20} strokeWidth={2.4} />}</button>
               </form>
